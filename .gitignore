@@ -65,3 +65,5 @@ htmlcov/
 Thumbs.db
 
 tests/
+scripts/
+uploads/
