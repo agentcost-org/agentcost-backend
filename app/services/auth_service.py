@@ -178,16 +178,37 @@ class AuthService:
         if existing:
             raise ValueError("Email already registered")
         
+        # Generate verification token - keep plaintext for email, store hash in DB
+        _plaintext_verification_token = generate_verification_token()
+        
         user = User(
             email=normalized_email,
             password_hash=hash_password(data.password),
             name=data.name,
-            email_verification_token=generate_verification_token(),
+            email_verification_token=hash_token(_plaintext_verification_token),
         )
         
         try:
             self.db.add(user)
             await self.db.flush()  # Get user ID without committing
+
+            # Assign sequential user_number with row-level locking to prevent race conditions
+            from sqlalchemy import func as sa_func
+            max_num_query = select(
+                sa_func.coalesce(sa_func.max(User.user_number), 0)
+            ).with_for_update()
+            max_num = (await self.db.execute(max_num_query)).scalar() or 0
+            user.user_number = max_num + 1
+
+            # Auto-assign milestone badge based on signup position
+            if user.user_number <= 20:
+                user.milestone_badge = "top_20"
+            elif user.user_number <= 50:
+                user.milestone_badge = "top_50"
+            elif user.user_number <= 100:
+                user.milestone_badge = "top_100"
+            elif user.user_number <= 1000:
+                user.milestone_badge = "top_1000"
             
             # Record consent for Terms of Service
             terms_consent = PolicyConsent(
@@ -209,13 +230,15 @@ class AuthService:
             )
             self.db.add(privacy_consent)
             
-            await self.db.commit()
+            await self.db.flush()
             await self.db.refresh(user)
         except IntegrityError:
             # Race condition: someone registered this email between our check and insert
             await self.db.rollback()
             raise ValueError("Email already registered")
         
+        # Attach plaintext token for email sending (not persisted)
+        user._plaintext_verification_token = _plaintext_verification_token
         return user
     
     async def record_policy_consent(
@@ -429,9 +452,10 @@ class AuthService:
     
     async def verify_email(self, token: str) -> Optional[User]:
         """Verify user email with token"""
+        token_hash = hash_token(token)
         result = await self.db.execute(
             select(User).where(
-                User.email_verification_token == token,
+                User.email_verification_token == token_hash,
                 User.email_verified == False
             )
         )
@@ -456,7 +480,7 @@ class AuthService:
             return None
         
         new_token = generate_verification_token()
-        user.email_verification_token = new_token
+        user.email_verification_token = hash_token(new_token)
         
         await self.db.commit()
         await self.db.refresh(user)
@@ -476,7 +500,7 @@ class AuthService:
             return None
         
         token = generate_password_reset_token()
-        user.password_reset_token = token
+        user.password_reset_token = hash_token(token)
         user.password_reset_expires = datetime.now(timezone.utc) + timedelta(hours=24)
         
         await self.db.commit()
@@ -485,9 +509,10 @@ class AuthService:
     
     async def reset_password(self, token: str, new_password: str) -> bool:
         """Reset password using token"""
+        token_hash = hash_token(token)
         result = await self.db.execute(
             select(User).where(
-                User.password_reset_token == token,
+                User.password_reset_token == token_hash,
                 User.password_reset_expires > datetime.now(timezone.utc)
             )
         )

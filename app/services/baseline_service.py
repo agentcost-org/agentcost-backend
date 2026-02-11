@@ -511,7 +511,7 @@ class PatternAnalysisService:
                 "coverage_days": coverage_days,
             })
         
-        opportunities.sort(key=lambda x: x["estimated_monthly_savings"], reverse=True)
+        opportunities.sort(key=lambda x: x["estimated_monthly_savings"] or 0, reverse=True)
         return opportunities
     
     async def get_top_duplicate_patterns(

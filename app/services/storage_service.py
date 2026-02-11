@@ -63,7 +63,7 @@ def _validate_file(original_name: str, size: int) -> str:
 
     if ext not in ALLOWED_EXTENSIONS:
         guessed = mimetypes.guess_type(original_name)[0]
-        if guessed and guessed.split("/")[0] in ("image", "text", "application"):
+        if guessed and guessed.split("/")[0] in ("image", "text"):
             pass  # generic safe MIME family -- allow through
         else:
             raise ValueError(
@@ -139,14 +139,18 @@ class LocalStorage(StorageBackend):
         }
 
     async def read(self, stored_name: str) -> bytes:
-        path = self.base_dir / stored_name
+        path = (self.base_dir / stored_name).resolve()
+        if not path.is_relative_to(self.base_dir):
+            raise ValueError("Invalid file path")
         if not path.exists():
             raise FileNotFoundError(f"Attachment not found: {stored_name}")
         async with aiofiles.open(path, "rb") as f:
             return await f.read()
 
     async def delete(self, stored_name: str) -> None:
-        path = self.base_dir / stored_name
+        path = (self.base_dir / stored_name).resolve()
+        if not path.is_relative_to(self.base_dir):
+            raise ValueError("Invalid file path")
         try:
             path.unlink(missing_ok=True)
         except OSError:

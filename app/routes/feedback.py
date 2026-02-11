@@ -96,10 +96,6 @@ def build_display_name(
         return provided_name
     if user and user.name:
         return user.name
-    if user and user.email:
-        return user.email.split("@", 1)[0]
-    if provided_email:
-        return provided_email.split("@", 1)[0]
     return "Anonymous"
 
 

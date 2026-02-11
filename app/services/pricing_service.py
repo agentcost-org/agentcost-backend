@@ -64,18 +64,21 @@ class PricingService:
                 "provider": model.provider,
             }
         
+        # Fuzzy match using SQL LIKE instead of loading all models into memory
         model_lower = model_name.lower()
-        query = select(ModelPricing).where(ModelPricing.is_active == True)
-        result = await self.db.execute(query)
-        all_models = result.scalars().all()
+        fuzzy_query = select(ModelPricing).where(
+            ModelPricing.is_active == True,
+            ModelPricing.model_name.ilike(f"%{model_lower}%")
+        ).limit(1)
+        result = await self.db.execute(fuzzy_query)
+        m = result.scalar_one_or_none()
         
-        for m in all_models:
-            if m.model_name in model_lower or model_lower in m.model_name:
-                return {
-                    "input": m.input_price_per_1k,
-                    "output": m.output_price_per_1k,
-                    "provider": m.provider,
-                }
+        if m:
+            return {
+                "input": m.input_price_per_1k,
+                "output": m.output_price_per_1k,
+                "provider": m.provider,
+            }
         
         return None
     

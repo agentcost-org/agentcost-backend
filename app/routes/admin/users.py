@@ -5,13 +5,14 @@ Admin routes -- user and tenant management.
 from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Body
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, desc, or_
 from datetime import datetime, timezone
 
 from ...database import get_db
 from ...models.user_models import User, UserSession, ProjectMember
-from ...models.db_models import Project, Event
+from ...models.db_models import Project, Event, UserMilestone
 from ...services.admin_service import (
     log_admin_action,
     delete_user_permanently as svc_delete_user,
@@ -21,6 +22,28 @@ from ...services.email_service import send_admin_email
 from ._deps import require_superuser
 
 router = APIRouter()
+
+
+def _escape_like(value: str) -> str:
+    """Escape special LIKE/ILIKE characters to prevent wildcard injection."""
+    return value.replace("%", "\\%").replace("_", "\\_")
+
+
+class AdminUserUpdate(BaseModel):
+    """Typed body for admin user update."""
+    is_active: Optional[bool] = None
+    is_superuser: Optional[bool] = None
+
+
+class AdminNotesUpdate(BaseModel):
+    """Typed body for admin notes update."""
+    notes: str = Field(default="", max_length=10000)
+
+
+class AdminEmailBody(BaseModel):
+    """Typed body for admin direct email."""
+    subject: str = Field(..., min_length=1, max_length=500)
+    body: str = Field(..., min_length=1, max_length=50000)
 
 
 @router.get("/users")
@@ -39,7 +62,8 @@ async def list_users(
     query = select(User)
 
     if search:
-        pattern = f"%{search}%"
+        escaped = _escape_like(search)
+        pattern = f"%{escaped}%"
         query = query.where(
             or_(User.email.ilike(pattern), User.name.ilike(pattern))
         )
@@ -67,6 +91,8 @@ async def list_users(
                 "is_active": u.is_active,
                 "is_superuser": u.is_superuser,
                 "email_verified": u.email_verified,
+                "user_number": u.user_number,
+                "milestone_badge": u.milestone_badge,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
                 "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
             }
@@ -123,6 +149,13 @@ async def get_user_detail(
         )
     )).scalar() or 0
 
+    # Fetch milestones
+    milestones = (await db.execute(
+        select(UserMilestone)
+        .where(UserMilestone.user_id == user_id)
+        .order_by(desc(UserMilestone.achieved_at))
+    )).scalars().all()
+
     return {
         "id": user.id,
         "email": user.email,
@@ -132,6 +165,8 @@ async def get_user_detail(
         "is_superuser": user.is_superuser,
         "email_verified": user.email_verified,
         "admin_notes": user.admin_notes,
+        "user_number": user.user_number,
+        "milestone_badge": user.milestone_badge,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         "active_sessions": session_count,
@@ -152,6 +187,16 @@ async def get_user_detail(
             }
             for pm, proj in memberships
         ],
+        "milestones": [
+            {
+                "id": m.id,
+                "milestone_type": m.milestone_type,
+                "milestone_name": m.milestone_name,
+                "milestone_description": m.milestone_description,
+                "achieved_at": m.achieved_at.isoformat() if m.achieved_at else None,
+            }
+            for m in milestones
+        ],
         "usage": usage or {"total_events": 0, "total_tokens": 0, "total_cost": 0},
     }
 
@@ -159,7 +204,7 @@ async def get_user_detail(
 @router.patch("/users/{user_id}")
 async def update_user(
     user_id: str,
-    body: Dict[str, Any] = Body(...),
+    body: AdminUserUpdate,
     request: Request = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_superuser),
@@ -169,22 +214,26 @@ async def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if user_id == admin.id and "is_superuser" in body and not body["is_superuser"]:
+    if user_id == admin.id and body.is_superuser is not None and not body.is_superuser:
         raise HTTPException(
             status_code=400,
             detail="Cannot remove your own superuser status",
         )
 
     changes = {}
-    allowed_fields = {"is_active", "is_superuser"}
-    for field in allowed_fields:
-        if field in body:
-            old_val = getattr(user, field)
-            setattr(user, field, body[field])
-            if old_val != body[field]:
-                changes[field] = {"old": old_val, "new": body[field]}
+    if body.is_active is not None:
+        old_val = user.is_active
+        user.is_active = body.is_active
+        if old_val != body.is_active:
+            changes["is_active"] = {"old": old_val, "new": body.is_active}
 
-    if "is_active" in body and not body["is_active"]:
+    if body.is_superuser is not None:
+        old_val = user.is_superuser
+        user.is_superuser = body.is_superuser
+        if old_val != body.is_superuser:
+            changes["is_superuser"] = {"old": old_val, "new": body.is_superuser}
+
+    if body.is_active is not None and not body.is_active:
         await db.execute(
             update(UserSession)
             .where(UserSession.user_id == user_id, UserSession.is_revoked == False)
@@ -270,18 +319,16 @@ async def delete_user(
 @router.put("/users/{user_id}/notes")
 async def set_admin_notes(
     user_id: str,
-    body: Dict[str, Any] = Body(...),
+    body: AdminNotesUpdate,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_superuser),
 ):
     """
     Update the internal admin notes for a user.
-    Expects: { "notes": "text content" }
     """
-    notes = body.get("notes", "")
     try:
         user = await svc_update_admin_notes(
-            db, user_id=user_id, notes=notes, admin=admin
+            db, user_id=user_id, notes=body.notes, admin=admin
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -293,20 +340,16 @@ async def set_admin_notes(
 @router.post("/users/{user_id}/send-email")
 async def send_email_to_user(
     user_id: str,
-    body: Dict[str, Any] = Body(...),
+    body: AdminEmailBody,
     request: Request = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_superuser),
 ):
     """
     Send a direct email to a user from the admin panel.
-    Expects: { "subject": "...", "body": "..." }
     """
-    subject = (body.get("subject") or "").strip()
-    email_body = (body.get("body") or "").strip()
-
-    if not subject or not email_body:
-        raise HTTPException(status_code=400, detail="Subject and body are required")
+    subject = body.subject.strip()
+    email_body = body.body.strip()
 
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:

@@ -130,6 +130,8 @@ async def get_feedback_detail(
         "model_provider": feedback.model_provider,
         "environment": feedback.environment,
         "is_confidential": feedback.is_confidential,
+        "attachments": feedback.attachments,
+        "client_metadata": feedback.client_metadata,
         "admin_response": feedback.admin_response,
         "admin_responded_at": feedback.admin_responded_at.isoformat() if feedback.admin_responded_at else None,
         "created_at": feedback.created_at.isoformat() if feedback.created_at else None,

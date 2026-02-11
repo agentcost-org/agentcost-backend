@@ -2,6 +2,7 @@
 Admin routes -- pricing intelligence and sync.
 """
 
+import time
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 
@@ -11,8 +12,9 @@ from sqlalchemy import select, func, desc
 
 from ...database import get_db
 from ...models.user_models import User
-from ...models.db_models import ModelPricing
+from ...models.db_models import ModelPricing, PricingSyncLog
 from ...services.pricing_service import PricingService
+from ...services.admin_service import log_admin_action
 from ._deps import require_superuser
 
 router = APIRouter()
@@ -148,11 +150,58 @@ async def sync_litellm_pricing(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_superuser),
 ):
-    """Trigger manual LiteLLM pricing sync."""
+    """Trigger manual LiteLLM pricing sync with full audit trail."""
     pricing_service = PricingService(db)
+    start_time = time.monotonic()
     try:
         result = await pricing_service.sync_from_litellm(track_changes=True)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+
+        changes = result.get("changes", {})
+        log_entry = PricingSyncLog(
+            admin_id=admin.id,
+            source="litellm",
+            status=result.get("status", "ok"),
+            models_created=result.get("models_created", 0),
+            models_updated=result.get("models_updated", 0),
+            models_skipped=result.get("models_skipped", 0),
+            new_models=changes.get("new_models") or None,
+            price_changes=changes.get("price_changes") or None,
+            capability_changes=changes.get("capability_changes") or None,
+            error_message=result.get("error"),
+            duration_ms=duration_ms,
+        )
+        db.add(log_entry)
+
+        await log_admin_action(
+            db,
+            admin_id=admin.id,
+            action_type="pricing_sync",
+            target_type="system",
+            details={
+                "source": "litellm",
+                "models_created": result.get("models_created", 0),
+                "models_updated": result.get("models_updated", 0),
+                "models_skipped": result.get("models_skipped", 0),
+                "duration_ms": duration_ms,
+            },
+        )
+
+        await db.commit()
+        result["duration_ms"] = duration_ms
         return result
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        log_entry = PricingSyncLog(
+            admin_id=admin.id,
+            source="litellm",
+            status="error",
+            error_message=str(exc),
+            duration_ms=duration_ms,
+        )
+        db.add(log_entry)
+        await db.commit()
+        raise
     finally:
         await pricing_service.close()
 
@@ -162,10 +211,97 @@ async def sync_openrouter_pricing(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_superuser),
 ):
-    """Trigger manual OpenRouter pricing sync."""
+    """Trigger manual OpenRouter pricing sync with full audit trail."""
     pricing_service = PricingService(db)
+    start_time = time.monotonic()
     try:
-        result = await pricing_service.sync_from_openrouter(track_changes=True)
+        result = await pricing_service.sync_from_openrouter()
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+
+        log_entry = PricingSyncLog(
+            admin_id=admin.id,
+            source="openrouter",
+            status=result.get("status", "ok"),
+            models_created=result.get("models_created", 0),
+            models_updated=result.get("models_updated", 0),
+            models_skipped=result.get("models_skipped", 0),
+            error_message=result.get("error"),
+            duration_ms=duration_ms,
+        )
+        db.add(log_entry)
+
+        await log_admin_action(
+            db,
+            admin_id=admin.id,
+            action_type="pricing_sync",
+            target_type="system",
+            details={
+                "source": "openrouter",
+                "models_created": result.get("models_created", 0),
+                "models_updated": result.get("models_updated", 0),
+                "duration_ms": duration_ms,
+            },
+        )
+
+        await db.commit()
+        result["duration_ms"] = duration_ms
         return result
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        log_entry = PricingSyncLog(
+            admin_id=admin.id,
+            source="openrouter",
+            status="error",
+            error_message=str(exc),
+            duration_ms=duration_ms,
+        )
+        db.add(log_entry)
+        await db.commit()
+        raise
     finally:
         await pricing_service.close()
+
+
+@router.get("/pricing/sync-history")
+async def get_sync_history(
+    source: Optional[str] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_superuser),
+):
+    """Get pricing sync history with detailed change records."""
+    query = select(PricingSyncLog)
+    count_q = select(func.count(PricingSyncLog.id))
+
+    if source:
+        query = query.where(PricingSyncLog.source == source)
+        count_q = count_q.where(PricingSyncLog.source == source)
+
+    total = (await db.execute(count_q)).scalar() or 0
+    query = query.order_by(desc(PricingSyncLog.created_at)).limit(limit).offset(offset)
+    logs = (await db.execute(query)).scalars().all()
+
+    return {
+        "items": [
+            {
+                "id": log.id,
+                "admin_id": log.admin_id,
+                "source": log.source,
+                "status": log.status,
+                "models_created": log.models_created,
+                "models_updated": log.models_updated,
+                "models_skipped": log.models_skipped,
+                "new_models": log.new_models,
+                "price_changes": log.price_changes,
+                "capability_changes": log.capability_changes,
+                "error_message": log.error_message,
+                "duration_ms": log.duration_ms,
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+            }
+            for log in logs
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }

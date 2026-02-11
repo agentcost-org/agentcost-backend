@@ -6,6 +6,7 @@ Templates live in the ``email_templates`` package to keep this module lean.
 """
 
 import resend
+import asyncio
 from typing import Optional
 
 from ..config import get_settings
@@ -62,6 +63,11 @@ def _send(to: str | list[str], subject: str, html: str) -> bool:
         return False
 
 
+async def _send_async(to: str | list[str], subject: str, html: str) -> bool:
+    """Async wrapper that runs the blocking _send in a thread executor."""
+    return await asyncio.to_thread(_send, to, subject, html)
+
+
 # ---------------------------------------------------------------------------
 # Public email senders
 # ---------------------------------------------------------------------------
@@ -75,7 +81,7 @@ async def send_verification_email(
     """Send email verification link to user."""
     verification_link = f"{FRONTEND_URL}/auth/verify-email?token={token}"
     html = get_verification_email_html(name, verification_link)
-    return _send(email, "Verify your AgentCost account", html)
+    return await _send_async(email, "Verify your AgentCost account", html)
 
 
 async def send_password_reset_email(
@@ -86,7 +92,7 @@ async def send_password_reset_email(
     """Send password reset link to user."""
     reset_link = f"{FRONTEND_URL}/auth/reset-password?token={token}"
     html = get_password_reset_email_html(name, reset_link)
-    return _send(email, "Reset your AgentCost password", html)
+    return await _send_async(email, "Reset your AgentCost password", html)
 
 
 async def send_invitation_email(
@@ -101,7 +107,7 @@ async def send_invitation_email(
     html = get_invitation_email_html(
         invitee_name, project_name, inviter_name, role, dashboard_link
     )
-    return _send(
+    return await _send_async(
         email,
         f"You've been invited to {project_name} on AgentCost",
         html,
@@ -119,7 +125,7 @@ async def send_new_user_invitation_email(
     html = get_new_user_invitation_email_html(
         email, project_name, inviter_name, role, register_link
     )
-    return _send(
+    return await _send_async(
         email,
         f"You've been invited to {project_name} on AgentCost",
         html,
@@ -147,7 +153,7 @@ async def send_feedback_admin_notification(
         submitted_by=submitted_by,
         link=link,
     )
-    return _send(admin_email, "New feedback submitted", html)
+    return await _send_async(admin_email, "New feedback submitted", html)
 
 
 async def send_feedback_update_email(
@@ -168,7 +174,7 @@ async def send_feedback_update_email(
         admin_response=admin_response,
         link=link,
     )
-    return _send(email, "Your feedback has been updated", html)
+    return await _send_async(email, "Your feedback has been updated", html)
 
 
 def send_admin_email(to: str, subject: str, body: str) -> bool:

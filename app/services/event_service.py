@@ -53,6 +53,8 @@ class EventService:
                 event_data.input_tokens,
                 event_data.output_tokens,
             )
+            # Use server cost when available; fall back to SDK-provided cost
+            final_cost = calculated_cost if calculated_cost > 0 else event_data.cost
 
             db_event = Event(
                 project_id=project_id,
@@ -61,7 +63,7 @@ class EventService:
                 input_tokens=event_data.input_tokens,
                 output_tokens=event_data.output_tokens,
                 total_tokens=total_tokens,
-                cost=calculated_cost,
+                cost=final_cost,
                 latency_ms=event_data.latency_ms,
                 timestamp=timestamp,
                 success=event_data.success,
@@ -77,11 +79,11 @@ class EventService:
                     project_id=project_id,
                     agent_name=event_data.agent_name,
                     input_hash=event_data.input_hash,
-                    cost=calculated_cost,
+                    cost=final_cost,
                 )
         
         self.db.add_all(db_events)
-        await self.db.commit()  # Commit without needing IDs back
+        await self.db.flush()  # Let get_db handle the final commit
         await pricing_service.close()
         
         return len(db_events)
@@ -151,21 +153,11 @@ class ProjectService:
         return result.scalar_one_or_none()
     
     async def get_by_api_key(self, api_key: str) -> Optional[Project]:
-        """Get project by API key (supports both legacy plaintext and hashed keys)"""
+        """Get project by API key (hashed lookup only)"""
         from ..utils.auth import hash_api_key
         
-        # First try hashed lookup (secure method)
         hashed_key = hash_api_key(api_key)
         query = select(Project).where(Project.api_key == hashed_key)
-        result = await self.db.execute(query)
-        project = result.scalar_one_or_none()
-        
-        if project:
-            return project
-        
-        # Fallback: try plaintext lookup for backward compatibility
-        # (for existing projects created before hashing was implemented)
-        query = select(Project).where(Project.api_key == api_key)
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
     

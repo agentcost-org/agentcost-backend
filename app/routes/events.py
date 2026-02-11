@@ -4,7 +4,7 @@ AgentCost Backend - Events API Routes
 Endpoints for event ingestion.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 
@@ -63,8 +63,8 @@ async def ingest_events_batch(
 
 @router.get("", response_model=list[EventResponse])
 async def list_events(
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     agent_name: str = None,
     model: str = None,
     db: AsyncSession = Depends(get_db),
@@ -78,7 +78,7 @@ async def list_events(
     event_service = EventService(db)
     events = await event_service.get_events(
         project_id=project.id,
-        limit=min(limit, 1000),  # Cap at 1000
+        limit=limit,
         offset=offset,
         agent_name=agent_name,
         model=model,

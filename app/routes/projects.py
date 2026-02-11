@@ -61,12 +61,12 @@ async def get_required_user(
 async def create_project(
     request: ProjectCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_required_user),
 ):
     """
     Create a new project.
     
-    If authenticated with JWT, the project will be linked to the user.
+    Requires authentication. The project will be linked to the authenticated user.
     
     Returns the project with its API key.
     
@@ -74,7 +74,7 @@ async def create_project(
     The API key is hashed before storage for security.
     """
     project_service = ProjectService(db)
-    owner_id = current_user.id if current_user else None
+    owner_id = current_user.id
     project, plaintext_api_key = await project_service.create(
         name=request.name,
         description=request.description,

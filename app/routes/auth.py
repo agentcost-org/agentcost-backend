@@ -1,6 +1,7 @@
 # AgentCost Backend - Authentication Routes - API endpoints for user authentication, registration, and session management.
 
-
+import time
+from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +26,25 @@ router = APIRouter(prefix="/v1/auth", tags=["Authentication"])
 
 # Security scheme for JWT bearer token
 security = HTTPBearer(auto_error=False)
+
+# Simple in-memory rate limiter for sensitive endpoints
+_reset_attempts: dict[str, list[float]] = defaultdict(list)
+_RESET_MAX_ATTEMPTS = 3
+_RESET_WINDOW_SECONDS = 3600  # 1 hour
+
+
+def _check_rate_limit(key: str) -> None:
+    """Raise 429 if key has exceeded rate limit within the window."""
+    now = time.monotonic()
+    attempts = _reset_attempts[key]
+    # Prune expired entries
+    _reset_attempts[key] = [t for t in attempts if now - t < _RESET_WINDOW_SECONDS]
+    if len(_reset_attempts[key]) >= _RESET_MAX_ATTEMPTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please try again later.",
+        )
+    _reset_attempts[key].append(now)
 
 
 # ============== Dependencies ==============
@@ -122,7 +142,9 @@ async def register(
             print(f"[AUTH] Processed {pending_count} pending invitation(s) for {user.email}")
         
         # Fire off verification email (non-blocking, won't fail registration if email fails)
-        await send_verification_email(user.email, user.email_verification_token, user.name)
+        plaintext_token = getattr(user, '_plaintext_verification_token', None)
+        if plaintext_token:
+            await send_verification_email(user.email, plaintext_token, user.name)
         
         message = "Registration successful. Please check your email to verify your account."
         if pending_count > 0:
@@ -392,7 +414,10 @@ async def request_password_reset(
     Request a password reset email.
     
     For security, always returns 204 even if email doesn't exist.
+    Rate limited to 3 requests per email per hour.
     """
+    _check_rate_limit(f"reset:{data.email.lower().strip()}")
+
     user = await auth_service.get_user_by_email(data.email)
     token = await auth_service.request_password_reset(data.email)
     

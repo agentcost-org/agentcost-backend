@@ -99,7 +99,10 @@ async def _apply_column_migrations(conn):
 
         desired = {
             "users": {
-                "admin_notes": {"type": "TEXT"},
+                "admin_notes":    {"type": "TEXT"},
+                "user_number":    {"type": "INTEGER"},
+                "milestone_badge": {"type": "VARCHAR(50)"},
+                "last_active_at": {"type": "TIMESTAMP"},
             },
             "feedback": {
                 "metadata":        {"type": "JSON"},

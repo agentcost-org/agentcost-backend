@@ -535,3 +535,73 @@ class AdminActivityLog(Base):
 
     def __repr__(self):
         return f"<AdminActivityLog {self.action_type} by {self.admin_id}>"
+
+
+class PricingSyncLog(Base):
+    """
+    Detailed audit trail for pricing sync operations.
+
+    Captures every sync (LiteLLM / OpenRouter) with full change breakdown:
+    new models added, prices changed, capabilities updated, and errors.
+    """
+
+    __tablename__ = "pricing_sync_log"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    admin_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    source = Column(String(50), nullable=False)  # litellm, openrouter
+    status = Column(String(20), nullable=False)   # ok, error, partial
+
+    models_created = Column(Integer, default=0)
+    models_updated = Column(Integer, default=0)
+    models_skipped = Column(Integer, default=0)
+
+    # Detailed change records stored as JSON arrays
+    new_models = Column(JSON, nullable=True)          # [{model, provider, input_price, output_price, ...}]
+    price_changes = Column(JSON, nullable=True)       # [{model, old_input, new_input, change_pct, ...}]
+    capability_changes = Column(JSON, nullable=True)  # [{model, change, old, new}]
+
+    error_message = Column(Text, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_sync_log_source", "source", "created_at"),
+    )
+
+    def __repr__(self):
+        return f"<PricingSyncLog {self.source} - {self.status} at {self.created_at}>"
+
+
+class UserMilestone(Base):
+    """
+    Records of milestone achievements for users.
+
+    Each row is an immutable record of a milestone a user has earned,
+    such as being among the first N registrants or reaching usage
+    thresholds.
+    """
+
+    __tablename__ = "user_milestones"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    milestone_type = Column(String(100), nullable=False)  # signup_position, first_event, power_user, etc.
+    milestone_name = Column(String(255), nullable=False)
+    milestone_description = Column(Text, nullable=True)
+
+    achieved_at = Column(DateTime(timezone=True), server_default=func.now())
+    notified = Column(Boolean, default=False)
+
+    metadata_json = Column("metadata", JSON, nullable=True)
+
+    __table_args__ = (
+        Index("idx_user_milestones_user", "user_id", "achieved_at"),
+        Index("idx_user_milestones_type", "user_id", "milestone_type"),
+    )
+
+    def __repr__(self):
+        return f"<UserMilestone {self.milestone_type} for {self.user_id}>"

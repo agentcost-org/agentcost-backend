@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 
 from ..models.db_models import Event
+from ..config import get_settings
 from ..models.schemas import (
     AnalyticsOverview,
     AgentStats,
@@ -236,11 +237,16 @@ class AnalyticsService:
             List of TimeSeriesPoint
         """
         # For SQLite, we use strftime. For PostgreSQL, use date_trunc
+        _settings = get_settings()
+        is_sqlite = "sqlite" in _settings.database_url
         if granularity == "day":
             time_bucket = func.date(Event.timestamp)
         else:
-            # Hour granularity - use strftime for SQLite compatibility
-            time_bucket = func.strftime('%Y-%m-%d %H:00:00', Event.timestamp)
+            # Hour granularity
+            if is_sqlite:
+                time_bucket = func.strftime('%Y-%m-%d %H:00:00', Event.timestamp)
+            else:
+                time_bucket = func.date_trunc('hour', Event.timestamp)
         
         query = select(
             time_bucket.label('time_bucket'),

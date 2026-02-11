@@ -88,6 +88,13 @@ async def download_attachment(
     user: Optional[User] = Depends(_get_optional_user),
 ):
     """Download an attachment (auth-gated, never served as a static file)."""
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to download attachments",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     storage = get_storage()
     try:
         data = await storage.read(stored_name)

@@ -49,9 +49,14 @@ class User(Base):
     
     admin_notes = Column(Text, nullable=True)  # Internal notes visible only to admins
     
+    # Milestone tracking
+    user_number = Column(Integer, unique=True, nullable=True)  # Sequential registration order
+    milestone_badge = Column(String(50), nullable=True)  # top_20, top_50, top_100, top_1000, early_adopter
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_login_at = Column(DateTime(timezone=True), nullable=True)
+    last_active_at = Column(DateTime(timezone=True), nullable=True)
     
     owned_projects = relationship("Project", back_populates="owner", foreign_keys="Project.owner_id")
     project_memberships = relationship("ProjectMember", back_populates="user", foreign_keys="ProjectMember.user_id")
