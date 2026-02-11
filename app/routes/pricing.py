@@ -394,7 +394,7 @@ async def generate_alternatives(
     """
     Auto-generate model alternatives by analyzing pricing data.
     
-    This analyzes all 1900+ models in the pricing table and creates
+    This analyzes all 2000+ models in the pricing table and creates
     alternatives based on:
     - Same provider models (safer swaps)
     - Cross-provider models (for expensive models)
