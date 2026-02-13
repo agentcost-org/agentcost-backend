@@ -39,7 +39,12 @@ class EventCreate(BaseModel):
 
 
 class EventBatchRequest(BaseModel):
-    """Request body for batch event ingestion"""
+    """Request body for batch event ingestion
+    
+    Note: The effective max batch size is enforced by config.max_batch_size
+    (default 100) at the route level. The schema allows up to 1000 as an
+    upper safety net.
+    """
     
     project_id: str = Field(..., min_length=1)
     events: List[EventCreate] = Field(..., min_length=1, max_length=1000)

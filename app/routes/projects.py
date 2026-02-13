@@ -16,45 +16,12 @@ from ..models.user_models import User
 from ..services.event_service import ProjectService
 from ..services.auth_service import get_current_user
 from ..services.permission_service import PermissionService, Permission
-from ..utils.auth import validate_api_key, optional_api_key
+from ..utils.auth import validate_api_key, optional_api_key, get_required_user, get_optional_user
 
 router = APIRouter(prefix="/v1/projects", tags=["Projects"])
 
 # Optional bearer token for project creation
 bearer_scheme = HTTPBearer(auto_error=False)
-
-
-async def get_optional_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> Optional[User]:
-    """Get user from JWT token if provided, otherwise None"""
-    if not credentials:
-        return None
-    try:
-        return await get_current_user(db, credentials.credentials)
-    except Exception:
-        return None
-
-
-async def get_required_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    user = await get_current_user(db, credentials.credentials)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return user
 
 
 @router.post("")
@@ -150,17 +117,21 @@ async def update_project(
     project_id: str,
     request: ProjectUpdate,
     db: AsyncSession = Depends(get_db),
-    auth_project: Project = Depends(validate_api_key),
+    current_user: User = Depends(get_required_user),
 ):
     """
     Update project settings.
+
+    Requires JWT authentication and admin/owner role on the project.
     """
-    if project_id != auth_project.id:
-        raise HTTPException(
-            status_code=403,
-            detail="Not authorized to update this project.",
+    permission_service = PermissionService(db)
+    try:
+        await permission_service.require_permission(
+            current_user.id, project_id, Permission.EDIT_PROJECT
         )
-    
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
     project_service = ProjectService(db)
     project = await project_service.update(
         project_id=project_id,
@@ -187,19 +158,22 @@ async def update_project(
 async def delete_project(
     project_id: str,
     db: AsyncSession = Depends(get_db),
-    auth_project: Project = Depends(validate_api_key),
+    current_user: User = Depends(get_required_user),
 ):
     """
     Delete a project.
-    
+
+    Requires JWT authentication and admin/owner role on the project.
     WARNING: This will delete all associated events!
     """
-    if project_id != auth_project.id:
-        raise HTTPException(
-            status_code=403,
-            detail="Not authorized to delete this project.",
+    permission_service = PermissionService(db)
+    try:
+        await permission_service.require_permission(
+            current_user.id, project_id, Permission.DELETE_PROJECT
         )
-    
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
     project_service = ProjectService(db)
     success = await project_service.delete(project_id)
     

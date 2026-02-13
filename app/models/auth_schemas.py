@@ -100,6 +100,16 @@ class RegisterResponse(BaseModel):
     message: str = "Registration successful. Please check your email to verify your account."
 
 
+class GoogleAuthRequest(BaseModel):
+    """Google OAuth sign-in/sign-up request"""
+    
+    credential: str = Field(..., description="Google ID token from Google Identity Services")
+    accept_terms: bool = Field(default=True, description="User accepts Terms of Service (implicit via Google sign-in)")
+    accept_privacy: bool = Field(default=True, description="User accepts Privacy Policy (implicit via Google sign-in)")
+    terms_version: str = Field(default="1.0", description="Terms of Service version accepted")
+    privacy_version: str = Field(default="1.0", description="Privacy Policy version accepted")
+
+
 #  Login 
 
 class UserLogin(BaseModel):

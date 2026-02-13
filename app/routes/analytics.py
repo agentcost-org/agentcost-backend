@@ -7,7 +7,7 @@ Endpoints for analytics queries.
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Literal
 
 from ..database import get_db
 from ..models.schemas import (
@@ -47,7 +47,7 @@ def parse_time_range(range_str: str) -> tuple[datetime, datetime]:
 
 @router.get("/overview", response_model=AnalyticsOverview)
 async def get_overview(
-    range: str = Query("7d", description="Time range: 1h, 24h, 7d, 30d, 90d"),
+    range: Literal["1h", "24h", "7d", "30d", "90d"] = Query("7d", description="Time range: 1h, 24h, 7d, 30d, 90d"),
     db: AsyncSession = Depends(get_db),
     project: Project = Depends(validate_api_key),
 ):
@@ -64,7 +64,7 @@ async def get_overview(
 
 @router.get("/agents", response_model=list[AgentStats])
 async def get_agent_stats(
-    range: str = Query("7d", description="Time range: 1h, 24h, 7d, 30d, 90d"),
+    range: Literal["1h", "24h", "7d", "30d", "90d"] = Query("7d", description="Time range: 1h, 24h, 7d, 30d, 90d"),
     limit: int = Query(10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     project: Project = Depends(validate_api_key),
@@ -82,7 +82,7 @@ async def get_agent_stats(
 
 @router.get("/models", response_model=list[ModelStats])
 async def get_model_stats(
-    range: str = Query("7d", description="Time range: 1h, 24h, 7d, 30d, 90d"),
+    range: Literal["1h", "24h", "7d", "30d", "90d"] = Query("7d", description="Time range: 1h, 24h, 7d, 30d, 90d"),
     limit: int = Query(10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     project: Project = Depends(validate_api_key),
@@ -100,8 +100,8 @@ async def get_model_stats(
 
 @router.get("/timeseries", response_model=list[TimeSeriesPoint])
 async def get_timeseries(
-    range: str = Query("7d", description="Time range: 1h, 24h, 7d, 30d, 90d"),
-    granularity: str = Query("day", description="Granularity: hour, day"),
+    range: Literal["1h", "24h", "7d", "30d", "90d"] = Query("7d", description="Time range: 1h, 24h, 7d, 30d, 90d"),
+    granularity: Literal["hour", "day"] = Query("day", description="Granularity: hour, day"),
     db: AsyncSession = Depends(get_db),
     project: Project = Depends(validate_api_key),
 ):

@@ -53,15 +53,10 @@ class Settings(BaseSettings):
     # API Keys
     api_key_prefix: str = "sk_"
     
-    # CORS - Add your frontend domains in production
-    cors_origins: list[str] = [
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://127.0.0.1:5173",
-    ]
+    # CORS - Set via CORS_ORIGINS env var in production (comma-separated).
+    # Empty by default so production deployments must explicitly configure origins.
+    # For local development, set: CORS_ORIGINS=http://localhost:3000,http://localhost:3001
+    cors_origins: list[str] = []
     
     # Rate limiting
     rate_limit_requests: int = 100  # requests per minute
@@ -76,6 +71,9 @@ class Settings(BaseSettings):
     auto_sync_pricing_on_startup: bool = False
     # Sync interval in hours (0 = no background sync, just startup)
     pricing_sync_interval_hours: int = 24
+    
+    # Google OAuth
+    google_client_id: str = ""  # Google OAuth Client ID - required for Google Sign-In
     
     # Email - for verification and password reset emails
     resend_api_key: str = ""

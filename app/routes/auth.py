@@ -13,13 +13,15 @@ from ..models.auth_schemas import (
     PasswordChangeRequest, PasswordResetRequest, PasswordResetConfirm,
     EmailVerificationRequest, ResendVerificationRequest,
     SessionListResponse, SessionInfo, ProfileUpdate,
-    RefreshTokenRequest, PolicyCheckResponse, PolicyConsentInput
+    RefreshTokenRequest, PolicyCheckResponse, PolicyConsentInput,
+    GoogleAuthRequest
 )
-from ..services.auth_service import AuthService, get_current_user, decode_token
+from ..services.auth_service import AuthService, get_current_user, decode_token, verify_google_id_token
 from ..services.email_service import send_verification_email, send_password_reset_email
 from ..services.member_service import MemberService
 from ..models.user_models import User
 from ..config import get_settings
+from ..utils.auth import get_required_user, get_optional_user
 
 
 router = APIRouter(prefix="/v1/auth", tags=["Authentication"])
@@ -52,41 +54,6 @@ def _check_rate_limit(key: str) -> None:
 async def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
     """Get auth service instance"""
     return AuthService(db)
-
-
-async def get_optional_user(
-    credentials: Annotated[Optional[HTTPAuthorizationCredentials], Depends(security)],
-    db: AsyncSession = Depends(get_db)
-) -> Optional[User]:
-    """Get current user if authenticated, None otherwise"""
-    if not credentials:
-        return None
-    
-    return await get_current_user(db, credentials.credentials)
-
-
-async def get_required_user(
-    credentials: Annotated[Optional[HTTPAuthorizationCredentials], Depends(security)],
-    db: AsyncSession = Depends(get_db)
-) -> User:
-    """Get current user, raise 401 if not authenticated"""
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    user = await get_current_user(db, credentials.credentials)
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    return user
 
 
 def get_client_info(request: Request) -> tuple[Optional[str], Optional[str]]:
@@ -171,6 +138,73 @@ async def register(
         )
 
 
+# ============== Google OAuth ==============
+
+@router.post("/google", response_model=TokenResponse)
+async def google_auth(
+    data: GoogleAuthRequest,
+    request: Request,
+    auth_service: AuthService = Depends(get_auth_service),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Authenticate or register with Google.
+    
+    Accepts a Google ID token (credential) from Google Identity Services.
+    - If the user exists, signs them in.
+    - If the user doesn't exist, creates a new account and signs them in.
+    
+    Google users get auto-verified email and no password is required.
+    """
+    settings = get_settings()
+    
+    if not settings.google_client_id:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Google sign-in is not configured on this server",
+        )
+    
+    # Verify the Google ID token
+    google_info = verify_google_id_token(data.credential)
+    
+    if not google_info:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Google credentials. Please try again.",
+        )
+    
+    device_info, ip_address = get_client_info(request)
+    
+    try:
+        user, is_new_user = await auth_service.google_authenticate(
+            google_id_info=google_info,
+            terms_version=data.terms_version,
+            privacy_version=data.privacy_version,
+            ip_address=ip_address,
+            user_agent=device_info,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    
+    # Process pending invitations for new users
+    if is_new_user:
+        member_service = MemberService(db)
+        pending_count = await member_service.process_pending_invitations_for_user(user)
+        if pending_count > 0:
+            print(f"[AUTH] Processed {pending_count} pending invitation(s) for {user.email}")
+    
+    # Generate tokens and create session (same as regular login)
+    return await auth_service.login_user(
+        user=user,
+        remember_me=True,  # Google users get extended session by default
+        device_info=device_info,
+        ip_address=ip_address,
+    )
+
+
 # ============== Policy Consent ==============
 
 @router.get("/policies/current")
@@ -247,6 +281,14 @@ async def login(
     user = await auth_service.authenticate_user(data.email, data.password)
     
     if not user:
+        # Check if this is a Google-only user trying to log in with password
+        google_check = await auth_service.get_user_by_email(data.email)
+        if google_check and google_check.auth_provider == "google" and not google_check.password_hash:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This account uses Google sign-in. Please use the 'Continue with Google' button.",
+            )
+        
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -390,6 +432,13 @@ async def change_password(
     
     Requires authentication and current password.
     """
+    # Google-only users cannot change a password they don't have
+    if getattr(user, 'auth_provider', 'email') == 'google' and not user.password_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This account uses Google sign-in and has no password to change. Use 'Forgot Password' to set one."
+        )
+    
     success = await auth_service.change_password(
         user_id=user.id,
         current_password=data.current_password,

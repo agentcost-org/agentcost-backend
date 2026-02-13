@@ -13,6 +13,7 @@ from ..models.schemas import EventBatchRequest, EventBatchResponse, EventRespons
 from ..models.db_models import Project
 from ..services.event_service import EventService
 from ..utils.auth import validate_api_key
+from ..config import get_settings
 
 router = APIRouter(prefix="/v1/events", tags=["Events"])
 
@@ -29,6 +30,14 @@ async def ingest_events_batch(
     This is the main endpoint called by the AgentCost SDK.
     Events are stored and processed for analytics.
     """
+    # M7 fix: enforce config.max_batch_size at runtime
+    settings = get_settings()
+    if len(request.events) > settings.max_batch_size:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Batch too large: {len(request.events)} events exceeds maximum of {settings.max_batch_size}.",
+        )
+
     # Verify project_id matches
     if request.project_id != project.id:
         raise HTTPException(

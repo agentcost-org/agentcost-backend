@@ -32,7 +32,11 @@ class User(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=True)  # Nullable for Google OAuth users
+    
+    # OAuth provider tracking
+    auth_provider = Column(String(20), default="email", nullable=False)  # email, google
+    google_id = Column(String(255), unique=True, nullable=True, index=True)  # Google sub claim
     
     name = Column(String(255), nullable=True)
     avatar_url = Column(String(512), nullable=True)

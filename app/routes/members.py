@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from datetime import datetime
 
 from ..database import get_db
@@ -17,6 +17,7 @@ from ..services.auth_service import get_current_user
 from ..services.member_service import MemberService
 from ..services.permission_service import PermissionService, Permission
 from ..services.email_service import send_invitation_email, send_new_user_invitation_email
+from ..utils.auth import get_required_user
 
 
 router = APIRouter(prefix="/v1/projects", tags=["Project Members"])
@@ -25,13 +26,30 @@ security = HTTPBearer(auto_error=False)
 
 # Request/Response models
 
+VALID_ROLES = ("admin", "member", "viewer")
+
+
 class InviteMemberRequest(BaseModel):
     email: EmailStr = Field(..., description="Email of user to invite")
     role: str = Field(default="member", description="Role: admin, member, or viewer")
 
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        if v not in VALID_ROLES:
+            raise ValueError(f"Role must be one of: {', '.join(VALID_ROLES)}")
+        return v
+
 
 class UpdateRoleRequest(BaseModel):
     role: str = Field(..., description="New role: admin, member, or viewer")
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        if v not in VALID_ROLES:
+            raise ValueError(f"Role must be one of: {', '.join(VALID_ROLES)}")
+        return v
 
 
 class MemberResponse(BaseModel):
@@ -62,32 +80,6 @@ class InvitationResponse(BaseModel):
 class InvitationsListResponse(BaseModel):
     invitations: List[InvitationResponse]
     total: int
-
-
-# Dependencies
-
-async def get_required_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    db: AsyncSession = Depends(get_db)
-) -> User:
-    """Get current user, raise 401 if not authenticated"""
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    user = await get_current_user(db, credentials.credentials)
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    return user
 
 
 # Routes

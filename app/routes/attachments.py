@@ -54,6 +54,13 @@ async def upload_attachment(
     user: Optional[User] = Depends(_get_optional_user),
 ):
     """Upload a single file. Returns metadata dict to store with the feedback item."""
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to upload attachments",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
@@ -109,8 +116,9 @@ async def download_attachment(
         content=data,
         media_type=content_type,
         headers={
-            "Content-Disposition": f'inline; filename="{stored_name}"',
+            "Content-Disposition": f'attachment; filename="{stored_name}"',
             "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
         },
     )
 

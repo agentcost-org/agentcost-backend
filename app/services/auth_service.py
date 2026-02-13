@@ -7,12 +7,13 @@ Handles password hashing, JWT generation/validation, and session management.
 import os
 import secrets
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, func as sa_func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -22,6 +23,8 @@ from ..models.auth_schemas import (
     SessionInfo, ProfileUpdate, PolicyConsentStatus, PolicyCheckResponse
 )
 from ..config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -129,6 +132,52 @@ def generate_password_reset_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def verify_google_id_token(credential: str) -> Optional[dict]:
+    """
+    Verify a Google ID token using Google's public keys.
+    
+        credential: The ID token string from Google Identity Services
+    Returns:
+        Decoded token payload with user info (sub, email, name, picture, etc.)
+        or None if verification fails
+    """
+    from google.oauth2 import id_token
+    from google.auth.transport import requests as google_requests
+    
+    settings = get_settings()
+    google_client_id = settings.google_client_id
+    
+    if not google_client_id:
+        logger.error("Google OAuth: GOOGLE_CLIENT_ID is not configured")
+        return None
+    
+    try:
+        # Verify the token against Google's public keys
+        idinfo = id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            google_client_id
+        )
+        
+        # Verify the issuer
+        if idinfo["iss"] not in ("accounts.google.com", "https://accounts.google.com"):
+            logger.warning("Google OAuth: Invalid issuer: %s", idinfo.get("iss"))
+            return None
+        
+        # Ensure email is verified by Google
+        if not idinfo.get("email_verified", False):
+            logger.warning("Google OAuth: Email not verified by Google for %s", idinfo.get("email"))
+            return None
+        
+        return idinfo
+    except ValueError as e:
+        logger.warning("Google OAuth: Token verification failed: %s", e)
+        return None
+    except Exception as e:
+        logger.error("Google OAuth: Unexpected error during verification: %s", e)
+        return None
+
+
 class AuthService:
     """Service class for authentication operations"""
     
@@ -176,6 +225,18 @@ class AuthService:
         # Check if email already exists
         existing = await self.get_user_by_email(normalized_email)
         if existing:
+            # Allow adding password to Google-only accounts (account linking)
+            if (
+                existing.auth_provider == "google"
+                and not existing.password_hash
+            ):
+                existing.password_hash = hash_password(data.password)
+                existing.auth_provider = "google+email"
+                if data.name and not existing.name:
+                    existing.name = data.name
+                await self.db.flush()
+                await self.db.refresh(existing)
+                return existing
             raise ValueError("Email already registered")
         
         # Generate verification token - keep plaintext for email, store hash in DB
@@ -193,7 +254,6 @@ class AuthService:
             await self.db.flush()  # Get user ID without committing
 
             # Assign sequential user_number with row-level locking to prevent race conditions
-            from sqlalchemy import func as sa_func
             max_num_query = select(
                 sa_func.coalesce(sa_func.max(User.user_number), 0)
             ).with_for_update()
@@ -349,6 +409,10 @@ class AuthService:
         if not user:
             return None
         
+        # Google-only users cannot log in with password
+        if not user.password_hash:
+            return None
+        
         if not verify_password(password, user.password_hash):
             return None
         
@@ -356,6 +420,162 @@ class AuthService:
             return None
         
         return user
+    
+    async def google_authenticate(
+        self,
+        google_id_info: dict,
+        terms_version: str = "1.0",
+        privacy_version: str = "1.0",
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> Tuple[User, bool]:
+        """
+        Authenticate or register a user via Google OAuth.
+        
+        If the user exists (matched by google_id or email), sign them in.
+        If the user doesn't exist, create a new account.
+        
+        Args:
+            google_id_info: Verified payload from Google ID token
+            terms_version: Terms of Service version accepted
+            privacy_version: Privacy Policy version accepted
+            ip_address: Client IP for consent audit trail
+            user_agent: Client user agent for consent audit trail
+        
+        Returns:
+            Tuple of (User, is_new_user)
+        
+        Raises:
+            ValueError: If the account exists with email/password auth only
+        """
+        google_sub = google_id_info["sub"]
+        email = google_id_info["email"].lower().strip()
+        name = google_id_info.get("name")
+        picture = google_id_info.get("picture")
+        
+        # 1. Try to find by Google ID first (returning user via Google)
+        result = await self.db.execute(
+            select(User).where(User.google_id == google_sub)
+        )
+        user = result.scalar_one_or_none()
+        
+        if user:
+            if not user.is_active:
+                raise ValueError("This account has been deactivated. Please contact support.")
+            # Update avatar if Google provides a new one
+            if picture and not user.avatar_url:
+                user.avatar_url = picture
+            return user, False
+        
+        # 2. Check if email already exists (email/password user linking to Google)
+        user = await self.get_user_by_email(email)
+        
+        if user:
+            if not user.is_active:
+                raise ValueError("This account has been deactivated. Please contact support.")
+            
+            # Link Google to existing email account
+            user.google_id = google_sub
+            if user.password_hash:
+                user.auth_provider = "google+email"
+            else:
+                user.auth_provider = "google"
+            
+            # Auto-verify email since Google already verified it
+            if not user.email_verified:
+                user.email_verified = True
+                user.email_verification_token = None
+            
+            # Set avatar from Google if user doesn't have one
+            if picture and not user.avatar_url:
+                user.avatar_url = picture
+            
+            # Set name from Google if user doesn't have one
+            if name and not user.name:
+                user.name = name
+            
+            await self.db.flush()
+            await self.db.refresh(user)
+            return user, False
+        
+        # 3. New user — create account
+        user = User(
+            email=email,
+            password_hash=None,  # No password for Google-only users
+            name=name,
+            avatar_url=picture,
+            auth_provider="google",
+            google_id=google_sub,
+            email_verified=True,  # Google already verified the email
+        )
+        
+        try:
+            self.db.add(user)
+            await self.db.flush()
+            
+            # Assign sequential user_number
+            max_num_query = select(
+                sa_func.coalesce(sa_func.max(User.user_number), 0)
+            ).with_for_update()
+            max_num = (await self.db.execute(max_num_query)).scalar() or 0
+            user.user_number = max_num + 1
+            
+            # Assign milestone badge
+            if user.user_number <= 20:
+                user.milestone_badge = "top_20"
+            elif user.user_number <= 50:
+                user.milestone_badge = "top_50"
+            elif user.user_number <= 100:
+                user.milestone_badge = "top_100"
+            elif user.user_number <= 1000:
+                user.milestone_badge = "top_1000"
+            
+            # Record consent for Terms of Service
+            terms_consent = PolicyConsent(
+                user_id=user.id,
+                policy_type="terms",
+                policy_version=terms_version,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            self.db.add(terms_consent)
+            
+            # Record consent for Privacy Policy
+            privacy_consent = PolicyConsent(
+                user_id=user.id,
+                policy_type="privacy",
+                policy_version=privacy_version,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            self.db.add(privacy_consent)
+            
+            await self.db.flush()
+            await self.db.refresh(user)
+        except IntegrityError:
+            await self.db.rollback()
+            # Race condition: account was created between check and insert.
+            # Retry lookup and link Google to the existing account.
+            user = await self.get_user_by_email(email)
+            if user:
+                user.google_id = google_sub
+                if user.password_hash:
+                    user.auth_provider = "google+email"
+                else:
+                    user.auth_provider = "google"
+                if not user.email_verified:
+                    user.email_verified = True
+                    user.email_verification_token = None
+                if picture and not user.avatar_url:
+                    user.avatar_url = picture
+                if name and not user.name:
+                    user.name = name
+                await self.db.flush()
+                await self.db.refresh(user)
+                return user, False
+            raise ValueError("An account with this email already exists")
+        
+        return user, True
     
     async def login_user(
         self,
@@ -525,6 +745,10 @@ class AuthService:
         user.password_reset_token = None
         user.password_reset_expires = None
         
+        # If a Google-only user sets a password, update auth_provider
+        if getattr(user, 'auth_provider', 'email') == 'google':
+            user.auth_provider = 'google+email'
+        
         await self.logout_all_sessions(user.id)
         
         await self.db.flush()
@@ -540,6 +764,10 @@ class AuthService:
         user = await self.get_user_by_id(user_id)
         
         if not user:
+            return False
+        
+        # Google-only users have no password to verify
+        if not user.password_hash:
             return False
         
         if not verify_password(current_password, user.password_hash):

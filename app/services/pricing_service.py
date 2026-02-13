@@ -65,10 +65,13 @@ class PricingService:
             }
         
         # Fuzzy match using SQL LIKE instead of loading all models into memory
-        model_lower = model_name.lower()
+        model_lower = model_name.lower().replace("%", "").replace("_", "")
+        if not model_lower:
+            return None
+        escaped = model_lower.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         fuzzy_query = select(ModelPricing).where(
             ModelPricing.is_active == True,
-            ModelPricing.model_name.ilike(f"%{model_lower}%")
+            ModelPricing.model_name.ilike(f"%{escaped}%")
         ).limit(1)
         result = await self.db.execute(fuzzy_query)
         m = result.scalar_one_or_none()

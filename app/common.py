@@ -25,6 +25,8 @@ def validate_password_strength(v: str) -> str:
     Returns the password unchanged if valid.
     Raises ValueError with a descriptive message otherwise.
     """
+    if len(v) > 128:
+        raise ValueError('Password must be at most 128 characters')
     if len(v) < 8:
         raise ValueError('Password must be at least 8 characters')
     if not re.search(r'[A-Z]', v):

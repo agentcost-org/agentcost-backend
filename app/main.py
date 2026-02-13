@@ -71,34 +71,45 @@ async def lifespan(app: FastAPI):
             from sqlalchemy import select
             from .models.user_models import User
             from .services.auth_service import hash_password
+            from .common import validate_password_strength
 
-            async for db in get_db_session():
-                existing = (await db.execute(
-                    select(User).where(User.email == admin_email.lower())
-                )).scalar_one_or_none()
+            # Validate admin password against policy
+            try:
+                validate_password_strength(admin_password)
+            except ValueError as pwd_err:
+                logger.warning("ADMIN_PASSWORD does not meet security policy: %s", pwd_err)
+                admin_password = None
 
-                if existing:
-                    if not existing.is_superuser:
-                        existing.is_superuser = True
-                        existing.is_active = True
-                        await db.commit()
-                        logger.info("Existing user %s promoted to superuser", admin_email)
+            if not admin_password:
+                logger.warning("Skipping admin auto-seed: password doesn't meet requirements")
+            else:
+                async for db in get_db_session():
+                    existing = (await db.execute(
+                        select(User).where(User.email == admin_email.lower())
+                    )).scalar_one_or_none()
+
+                    if existing:
+                        if not existing.is_superuser:
+                            existing.is_superuser = True
+                            existing.is_active = True
+                            await db.commit()
+                            logger.info("Existing user %s promoted to superuser", admin_email)
+                        else:
+                            logger.info("Superuser %s already exists", admin_email)
                     else:
-                        logger.info("Superuser %s already exists", admin_email)
-                else:
-                    admin_name = os.getenv("ADMIN_NAME", "Admin").strip()
-                    user = User(
-                        email=admin_email.lower(),
-                        password_hash=hash_password(admin_password),
-                        name=admin_name,
-                        is_superuser=True,
-                        is_active=True,
-                        email_verified=True,
-                    )
-                    db.add(user)
-                    await db.commit()
-                    logger.info("Superuser %s created from environment variables", admin_email)
-                break
+                        admin_name = os.getenv("ADMIN_NAME", "Admin").strip()
+                        user = User(
+                            email=admin_email.lower(),
+                            password_hash=hash_password(admin_password),
+                            name=admin_name,
+                            is_superuser=True,
+                            is_active=True,
+                            email_verified=True,
+                        )
+                        db.add(user)
+                        await db.commit()
+                        logger.info("Superuser %s created from environment variables", admin_email)
+                    break
         except Exception as e:
             logger.warning("Admin auto-seed failed: %s", e)
     
@@ -121,8 +132,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "Accept"],
 )
 
 # Rate limiting middleware

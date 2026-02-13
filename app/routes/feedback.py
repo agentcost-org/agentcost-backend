@@ -27,6 +27,7 @@ from ..services.email_service import (
     send_feedback_admin_notification,
     send_feedback_update_email,
 )
+from ..utils.auth import get_required_user as _shared_get_required_user
 
 router = APIRouter(prefix="/v1/feedback", tags=["Feedback"])
 security = HTTPBearer(auto_error=False)
@@ -328,16 +329,25 @@ async def list_feedback(
 
 
 @router.get("/summary", response_model=FeedbackSummaryResponse)
-async def get_feedback_summary(db: AsyncSession = Depends(get_db)):
+async def get_feedback_summary(
+    db: AsyncSession = Depends(get_db),
+    user: Optional[User] = Depends(get_optional_user),
+):
     """Get summary counts for feedback."""
-    total_result = await db.execute(select(func.count(Feedback.id)))
+    # Exclude confidential items from counts for non-admin users
+    is_admin = user and getattr(user, 'is_superuser', False)
+    base_filter = True if is_admin else Feedback.is_confidential == False  # noqa: E712
+
+    total_result = await db.execute(
+        select(func.count(Feedback.id)).where(base_filter)
+    )
     total = total_result.scalar() or 0
 
     type_rows = await db.execute(
-        select(Feedback.type, func.count(Feedback.id)).group_by(Feedback.type)
+        select(Feedback.type, func.count(Feedback.id)).where(base_filter).group_by(Feedback.type)
     )
     status_rows = await db.execute(
-        select(Feedback.status, func.count(Feedback.id)).group_by(Feedback.status)
+        select(Feedback.status, func.count(Feedback.id)).where(base_filter).group_by(Feedback.status)
     )
 
     by_type = {row[0]: row[1] for row in type_rows.all()}
@@ -380,6 +390,12 @@ async def get_feedback(
         raise HTTPException(status_code=404, detail="Feedback not found")
 
     feedback, comment_count, user_has_upvoted = row
+
+    # Block access to confidential items for non-admin users
+    is_admin = user and getattr(user, 'is_superuser', False)
+    if feedback.is_confidential and not is_admin:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+
     return serialize_feedback(feedback, comment_count, user_has_upvoted)
 
 
@@ -432,9 +448,9 @@ async def add_comment(
     feedback_id: str,
     comment: FeedbackCommentCreate,
     db: AsyncSession = Depends(get_db),
-    user: Optional[User] = Depends(get_optional_user),
+    user: User = Depends(_shared_get_required_user),
 ):
-    """Add a comment to feedback."""
+    """Add a comment to feedback. Requires authentication (L4 fix)."""
     feedback_result = await db.execute(select(Feedback).where(Feedback.id == feedback_id))
     feedback = feedback_result.scalar_one_or_none()
     if not feedback:
@@ -444,7 +460,7 @@ async def add_comment(
 
     new_comment = FeedbackComment(
         feedback_id=feedback_id,
-        user_id=user.id if user else None,
+        user_id=user.id,
         user_name=display_name,
         comment=comment.comment.strip(),
         is_admin=user.is_superuser if user else False,

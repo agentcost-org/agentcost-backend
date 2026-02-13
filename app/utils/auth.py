@@ -2,18 +2,23 @@
 AgentCost Backend - Authentication Utilities
 
 API key validation and JWT token handling.
+
+Shared get_required_user / get_optional_user dependencies live here
+to eliminate duplication across route modules.
 """
 
 import hashlib
 import secrets
-from fastapi import HTTPException, Security, Depends
+from fastapi import HTTPException, Security, Depends, status
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Tuple
 
 from ..database import get_db
 from ..services.event_service import ProjectService
+from ..services.auth_service import get_current_user
 from ..models.db_models import Project
+from ..models.user_models import User
 
 
 def hash_api_key(api_key: str) -> str:
@@ -117,3 +122,46 @@ async def optional_api_key(
     
     project_service = ProjectService(db)
     return await project_service.get_by_api_key(api_key)
+
+
+# Shared JWT user dependencies
+
+async def get_required_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Get the current authenticated user or raise 401."""
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = await get_current_user(db, credentials.credentials)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
+
+
+async def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[User]:
+    """Get current user if authenticated, None otherwise."""
+    if not credentials:
+        return None
+
+    user = await get_current_user(db, credentials.credentials)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user

@@ -103,6 +103,8 @@ async def _apply_column_migrations(conn):
                 "user_number":    {"type": "INTEGER"},
                 "milestone_badge": {"type": "VARCHAR(50)"},
                 "last_active_at": {"type": "TIMESTAMP"},
+                "auth_provider":  {"type": "VARCHAR(20)", "default": "'email'", "nullable": False},
+                "google_id":      {"type": "VARCHAR(255)"},
             },
             "feedback": {
                 "metadata":        {"type": "JSON"},
