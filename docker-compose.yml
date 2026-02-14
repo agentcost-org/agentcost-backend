@@ -8,6 +8,8 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL:-sqlite+aiosqlite:///./agentcost.db}
       - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY in .env}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - DEBUG=true
     volumes:
       - ./data:/app/data
