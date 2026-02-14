@@ -33,11 +33,16 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=convention)
 
 
+database_url = settings.database_url
+if database_url.startswith("postgresql://"):
+    database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    logger.info("Converted DATABASE_URL to use asyncpg driver")
+
 # Create async engine
 # Note: echo=False to prevent verbose SQL logging in terminal
 # For SQL debugging, use logging.getLogger('sqlalchemy.engine').setLevel(logging.DEBUG)
 engine = create_async_engine(
-    settings.database_url,
+    database_url,
     echo=False,
     future=True,
 )
