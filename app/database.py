@@ -9,8 +9,7 @@ import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import MetaData, text, inspect
-from typing import AsyncGenerator, Optional
-from fastapi import Request
+from typing import AsyncGenerator
 
 from .config import get_settings
 
@@ -55,19 +54,16 @@ async_session_maker = async_sessionmaker(
 )
 
 
-async def get_db(request: Optional[Request] = None) -> AsyncGenerator[AsyncSession, None]:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     Dependency to get database session.
     
-    Auto-commits only for write methods (POST, PUT, PATCH, DELETE) or non-HTTP contexts.
-    For safe methods (GET, HEAD, OPTIONS), no commit happens automatically.
+    Always commits on success, rolls back on error.
     """
     async with async_session_maker() as session:
         try:
             yield session
-            # Only commit if explicitly a write method or no request context (safety fallback)
-            if request is None or request.method not in {"GET", "HEAD", "OPTIONS"}:
-                await session.commit()
+            await session.commit()
         except Exception:
             await session.rollback()
             raise
