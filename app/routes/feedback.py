@@ -193,7 +193,7 @@ async def submit_feedback(
         environment=feedback.environment,
         client_metadata=feedback.client_metadata,
         is_confidential=feedback.type == "security_report",
-        ip_address=hashlib.sha256(ip_address.encode()).hexdigest() if ip_address else None,
+        ip_address=ip_address,
         user_agent=user_agent_str,
     )
 
